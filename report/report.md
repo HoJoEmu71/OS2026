@@ -177,7 +177,13 @@ kern_init () at kern/init/init.c:8
 8           memset(edata, 0, end - edata);
 ```
 
-至此完整跟踪了 **`0x1000`（MROM）→ `0x80000000`（OpenSBI）→ `0x80200000`（内核入口）→ `0x8020000a`（C 函数 `kern_init`）** 的全过程。
+至此完整跟踪了 **`0x1000`（MROM）→ `0x80000000`（OpenSBI）→ `0x80200000`（内核入口）→ `0x8020000a`（C 函数 `kern_init`）** 的全过程。完整调试会话截图如下（原始 GDB 输出逐行着色整理）：
+
+![GDB 三阶段启动跟踪](./images/gdb_boot_trace.png)
+
+> 说明：GDB 显示 `0x80203000 <SBI_CONSOLE_PUTCHAR>` 时，尖括号内只是调试器按符号表
+> 给出的"距离该地址最近的符号名"，不代表 sp 真的指向那个函数；结合 `nm` 输出，
+> `0x80203000` 的准确含义就是 `bootstacktop`。
 
 #### 调试中使用的关键命令
 
@@ -190,7 +196,11 @@ kern_init () at kern/init/init.c:8
 
 ## 五、测试与验证
 
-在 lab1 根目录执行 `make qemu`，编译并启动内核，关键输出如下：
+在 `code/` 目录执行 `make` 编译、`make qemu` 启动内核，完整真实输出截图如下：
+
+![make qemu 编译并启动内核成功](./images/test_result.png)
+
+关键文本输出（与截图一致）：
 
 ```text
 + cc kern/init/entry.S
