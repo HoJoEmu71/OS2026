@@ -1,240 +1,123 @@
-# Lab 2 提示词汇总（prompt.md）
+# Lab 3 提示词汇总（prompt.md）
 
-> 本文件按 lab0.5 学习并沿用至 lab1 的四段式框架（PROMPT / RELY / GUARANTEE / SPECIFICATION）
-> 记录 lab2 实际使用的提示词。实验报告只引用结论，完整 prompt 以本文件为准。
+> 本文件按 lab0.5 学习并沿用至 lab2 的四段式框架（PROMPT / RELY / GUARANTEE / SPECIFICATION）
+> 记录 lab3 实际使用的提示词。实验报告只引用结论，完整 prompt 以本文件为准。
 >
-> 说明：lab2 的 prompt 在实现前先由小组给出任务与约束，AI 按约束生成代码，
+> 说明：lab3 的 prompt 在实现前先由小组给出任务与约束，AI 按约束生成代码，
 > 再由小组通过 `make qemu` 与 `make grade` 的真实输出逐条验收；报告中“实现迭代过程”
 > 记录的是验收中发现的问题与对 prompt / 实现的修正。
 
 ---
 
-## 提示词 1：实现 page_init（对应功能模块一任务一）
+## 提示词 1：实现 RESTORE_ALL 与 __alltraps（对应功能模块一）
 
-**使用场景**：`kern/mm/pmm.c` 中只保留了 `//lab2 function1 YOUR CODE` 注释，`pmm_init()`
-调用 `page_init()`，但函数尚未实现，内核无法建立页描述符与空闲页链表。
+**使用场景**：`kern/trap/trapentry.S` 中 `SAVE_ALL` 已给定，`RESTORE_ALL` 与 `__alltraps`
+只有 `//lab3 function1 YOUR CODE` 占位。中断能触发但无法正确返回，内核在第一次中断后崩溃或死循环。
 
 ```text
 [PROMPT]
-**任务**：在 kern/mm/pmm.c 中实现 static void page_init(void)，完成物理内存探测与页描述符初始化。
+**任务**：在 kern/trap/trapentry.S 中实现两个部分：
+1. `.macro RESTORE_ALL`：从栈上的 trapframe 恢复 4 个 CSR（sstatus/sepc/sbadaddr/scause）
+   和 32 个通用寄存器，与 SAVE_ALL 严格对称；
+2. `__alltraps`：在 SAVE_ALL 之后，把当前 sp（即 trapframe 起始地址）按 RISC-V 调用约定
+   作为第一个参数传给 C 函数 trap()，调用返回后落到 __trapret 执行 RESTORE_ALL 和 sret。
+
 **操作要求**：
-1. 从设备树接口 get_memory_base()/get_memory_size() 取得物理内存范围；
-2. 正确设置全局变量 va_pa_offset、npage、pages，其中 pages 指向内核 end 之后、页对齐的
-   struct Page 描述符数组；
-3. 把排除 OpenSBI 区、内核镜像和描述符数组之后的完整空闲页，通过 init_memmap(base, n)
-   注册给当前 pmm_manager；
-4. 内存信息无效时必须 panic，不得继续初始化；没有完整空闲页时不得调用 init_memmap；
-5. 只允许修改 page_init 及其所需局部变量，不得修改 pmm_init 的调用顺序、entry.S 和启动页表。
-**输出要求**：给出最终代码，并说明虚拟地址、物理地址、页号三者之间的换算依据；
-同时说明 pages 数组覆盖的页号范围，以及内核尾页为什么必须保持 reserved。
+1. RESTORE_ALL 恢复 CSR 时，先用 s1/s2/s3/s4 作为临时寄存器从栈上 LOAD 再 csrw，
+   因为 csrw 不支持直接从内存取值；
+2. 通用寄存器 x0 恒为 0 不需要恢复，x2(sp) 必须放在最后恢复——否则恢复 sp 之后
+   就无法再用它寻址 trapframe 里的其他寄存器；
+3. __alltraps 用 `mv a0, sp` 传参，用 `jal trap` 调用（不要用 call 伪指令，保持显式）；
+4. 只修改 RESTORE_ALL 宏体和 __alltraps 函数体，不要改动 SAVE_ALL、__trapret、sret。
+
+**输出要求**：给出最终汇编代码，并说明为什么 sp 必须最后恢复、为什么 CSR 恢复要放在 GPR 恢复之前。
 
 [RELY]
-- 启动页表 boot_page_table_sv39 采用 1GiB 大页：VA 0xffffffffc0000000 → PA 0x80000000，
-  因此 0x80000000～0x88000000 的物理内存全部可经 PHYSICAL_MEMORY_OFFSET=0xFFFFFFFF40000000
-  线性访问；KERNBASE=0xFFFFFFFFC0200000 对应 PA 0x80200000
-- pmm.h：PADDR(kva)=kva-va_pa_offset；page2ppn(page)=page-pages+nbase；pa2page(pa) 要求
-  PPN(pa)<npage；struct Page { ref; flags; property; page_link; }
-- memlayout.h：PG_reserved/PG_property 宏，free_area_t，PHYSICAL_MEMORY_OFFSET/END
-- mmu.h：PGSIZE=4096、PPN(la)=la>>12
-- kernel.ld 提供 end 符号（.bss 结束、虚拟地址）；init_memmap 的调用约定是
-  “base 起的 n 个页描述符当前必须是 PageReserved，函数内部会清除该标志并挂入空闲链表”
-- QEMU virt：DTB 报告的内存为 [0x80000000, 0x88000000)，共 128MB；0x80000000～0x80200000
-  被 OpenSBI 占用，nbase=DRAM_BASE/PGSIZE=0x80000
+- trapframe 布局（由 SAVE_ALL 决定）：
+  sp+0*8  = x0, sp+1*8 = x1, ..., sp+31*8 = x31
+  sp+32*8 = sstatus, sp+33*8 = sepc, sp+34*8 = sbadaddr, sp+35*8 = scause
+- REGBYTES = 8（rv64），LOAD = ld，STORE = sd，定义在 trap.h
+- SAVE_ALL 中 x2 的保存值是“进入中断前的 sp”，RESTORE_ALL 必须把它写回 x2
+- s1=x9, s2=x18, s3=x19, s4=x20, s5=x21；这些寄存器本身也在 trapframe 中，
+  用它们作临时 CSR 中转后，后续 LOAD x9/x18/x19/x20/x21 会覆盖，不影响最终状态
+- RISC-V 调用约定：第一个参数走 a0(x10)；jal 指令把返回地址写入 ra(x1)
+- C 函数 trap(struct trapframe *tf) 在 trap.c 中定义，接收 trapframe 指针
 
 [GUARANTEE]
-- 不修改 check_alloc_page、default_pmm.c、best_fit_pmm.c 中的测试函数；
-- 编译必须通过 -Werror；运行 make grade 时 [Test 1] Page Init 必须 PASS；
-- 内核不得因描述符数组覆盖内核镜像或把内核尾页交给分配器而崩溃。
+- 不修改 SAVE_ALL、trap.h、trap.c；
+- 编译必须通过（-march=rv64imac -mcmodel=medany）；
+- 运行 make qemu 时内核必须能从第一次时钟中断正确返回并继续打印 100 ticks，
+  不能在第一次中断后崩溃或死循环。
 
 [SPECIFICATION]
 - Post-Condition：
-  * va_pa_offset = PHYSICAL_MEMORY_OFFSET；
-  * npage = PPN(get_memory_base()+get_memory_size())，且 npage > nbase；
-  * pages 页对齐，pages ≥ ROUNDUP(end, PGSIZE)；pages[0..npage-nbase-1] 全部先置为
-    reserved、ref=0、property=0；
-  * 空闲区物理地址 = [ROUNDUP(PADDR(pages)+描述符数组大小, PGSIZE), ROUNDDOWN(内存末尾, PGSIZE))，
-    以 pa2page(起点) 和页数调用 init_memmap；
-  * 打印物理内存范围、描述符页数与空闲页数。
-- Requirements：所有地址运算区分 VA/PA/PPN，禁止把虚拟地址直接当作物理地址交给 pa2page。
+  * RESTORE_ALL 执行后，所有 32 个 GPR（x1～x31）和 4 个 CSR 恢复到中断前的值；
+  * x2(sp) 在所有其他 LOAD 之后才被恢复；
+  * __alltraps 调用 trap() 时 a0 == sp（trapframe 地址）；
+  * trap() 返回后 PC 指向 __trapret，执行 RESTORE_ALL + sret。
+- Requirements：禁止在恢复 sp 之后再用 sp 寻址 trapframe；禁止用 call 伪指令（必须显式 jal）。
 ```
 
-**AI 关键产出**：`page_init()` 以 `end` 为界放置 32768 个描述符（128MB/4KB），
-先把全部描述符标为 reserved，再将内核镜像尾页之后到 0x88000000 的 31912 页交给
-`init_memmap` 注册；`make grade` 的 `[Test 1] Page Init: PASS` 一次通过。
+**AI 关键产出**：`RESTORE_ALL` 先恢复 sstatus/sepc/sbadaddr/scause（用 s1～s4 中转），
+再按 x1、x3～x31、x2 的顺序恢复寄存器，sp 最后一条 `LOAD x2, 2*REGBYTES(sp)`；
+`__alltraps` 用 `mv a0, sp; jal trap`。`make qemu` 正常输出 `100 ticks`，中断返回正确。
 
 ---
 
-## 提示词 2：实现 Best-Fit 并接入内核（对应功能模块二任务二）
+## 提示词 2：实现 interrupt_handler 与 exception_handler（对应功能模块二）
 
-**使用场景**：`kern/mm/best_fit_pmm.c` 只提供 `basic_check()` 与 `best_fit_check()`，
-没有管理函数、没有 `free_area`、也没有 `best_fit_pmm_manager`。
+**使用场景**：`kern/trap/trap.c` 中 `trap_dispatch()` 已给定，会根据 `tf->cause` 的符号
+调用 `interrupt_handler(tf)` 或 `exception_handler(tf)`，但两个函数体只有
+`//lab3 function2 YOUR CODE` 占位。时钟中断不触发第二次、非法指令异常死循环。
 
 ```text
 [PROMPT]
-**任务**：在 kern/mm/best_fit_pmm.c 中从零实现完整的 Best-Fit 物理内存管理模块，并在
-kern/mm/pmm.c 的 init_pmm_manager() 中把当前管理器切换为 best_fit_pmm_manager。
+**任务**：在 kern/trap/trap.c 中实现两个函数：
+1. interrupt_handler(struct trapframe *tf)：处理中断，按时钟/软件/外部/未知分类；
+2. exception_handler(struct trapframe *tf)：处理异常，对非法指令和断点推进 tf->epc。
+
 **操作要求**：
-1. 阅读 pmm.h 的 struct pmm_manager，按成员职责实现 init、init_memmap、alloc_pages、
-   free_pages、nr_free_pages、check，并定义 const struct pmm_manager best_fit_pmm_manager；
-2. 空闲块用 free_area_t + list.h 双向链表管理，块头页用 property 记录块大小并置 PG_property；
-3. alloc_pages 必须真正选择“满足请求的最小空闲块”，不能退化为 First-Fit；
-4. free_pages 需要按地址有序插入，并向前、向后合并相邻空闲块；
-5. 不得修改 basic_check / best_fit_check 两个测试函数，也不得改测试中使用的状态约定
-   （free_list、nr_free、PageProperty、property 的含义）。
-**输出要求**：给出完整代码，并说明 Best-Fit 与 First-Fit 在扫描策略上的差异，
-以及当前实现的时间复杂度。
+1. 时钟中断（IRQ_S_TIMER）必须调用 clock_set_next_event() 重设下一次事件，
+   否则只会触发一次；每 TICK_NUM 次 tick 调用 print_ticks()，累计 SHUTDOWN_AFTER 次后
+   调用 sbi_shutdown()；
+2. 软件中断（IRQ_S_SOFT）打印 "Supervisor software interrupt"；
+   外部中断（IRQ_S_EXT）打印 "Supervisor external interrupt"；
+   未知中断打印 "Unknown interrupt: cause %d"（取 cause 低 8 位）并调用 print_trapframe；
+3. 非法指令异常（CAUSE_ILLEGAL_INSTRUCTION）打印 "Illegal instruction at 0x%016lx"，
+   断点异常（CAUSE_BREAKPOINT）打印 "Breakpoint at 0x%016lx"；
+4. epc 的推进量必须根据指令编码动态判断：读 epc 处的低 16 位，若低两位为 0b11 则是
+   32 位指令（+4），否则是 16 位压缩指令（+2）——禁止写死 +4；
+5. 未识别的异常调用 print_trapframe(tf) 打印全部寄存器。
+
+**输出要求**：给出最终 C 代码，并说明时钟中断为什么必须重设、epc 为什么不能写死 +4。
 
 [RELY]
-- struct pmm_manager 六个成员：name/init/init_memmap/alloc_pages/free_pages/nr_free_pages/check
-- default_pmm.c 已给出 First-Fit 参考：init_memmap 把连续 n 页登记为一个块，
-  base->property=n + SetPageProperty(base)，nr_free+=n，按地址有序插入；
-  free_pages 先按地址插入，再与前后相邻块合并
-- best_fit_check 的关键序列：
-  free_pages(p0+1,2); free_pages(p0+4,1);
-  alloc_pages(4) 必须为 NULL；
-  alloc_pages(1) 必须返回 p0+4（唯一的最小可满足块，而不是 p0+1 的 2 页块）；
-  随后 free_pages(p0,5) 必须能合并 p0、p0+1..2、p0+4 并支持 alloc_pages(5)
-- 描述符字段：ref、flags(PG_reserved/PG_property)、property、page_link；
-  list.h 提供 list_init/list_add/list_add_before/list_del/list_next/list_prev/list_empty
-- 页描述符由 page_init 建好，alloc/free 只操作描述符，不直接碰物理内存内容
+- trap.h：struct trapframe { uint64_t gpr[32]; uint64_t status; uint64_t epc;
+  uint64_t badvaddr; uint64_t cause; }，字段顺序即 SAVE_ALL 的压栈顺序
+- riscv.h：IRQ_S_SOFT=1, IRQ_S_TIMER=5, IRQ_S_EXT=9；
+  CAUSE_ILLEGAL_INSTRUCTION=2, CAUSE_BREAKPOINT=3
+- cause 的 bit63 为 1 表示中断，低 8 位是中断号；trap_dispatch 中 cause<0 走中断分支
+- clock.h：clock_set_next_event() 写 mtimecmp 到当前 mtime + 一个 tick
+- sbi.h：sbi_shutdown() 通过 SBI 调用让 QEMU 退出
+- trap.c 已有全局变量 ticks 和 print_ticks()（每 TICK_NUM 次打印 "%d ticks"）
+- RISC-V 指令编码：32 位指令低两位必为 0b11；16 位压缩指令低两位为 0b00/01/10
 
 [GUARANTEE]
-- 不改测试函数与 pmm.h 接口；不引入 malloc/动态内存；
-- 编译通过 -Werror；make grade 的 [Test 2] Best-Fit 必须 PASS；
-- 任意 alloc/free 序列后必须满足 total(所有空闲块 property) == nr_free_pages()。
+- 不修改 trap_dispatch、trap.h、clock.h；
+- 编译必须通过 -Werror；
+- make grade 三个测试必须全过：
+  * Test 1：断点异常返回，epc 正确推进；
+  * Test 2：非法指令按 4 字节推进、软件中断/未知中断输出格式正确、cause=0x14；
+  * Test 3：时钟中断持续触发到 ticks=200。
 
 [SPECIFICATION]
-- init：初始化 free_list、nr_free=0；
-- init_memmap：断言 n>0、每页 reserved，清 flags/property/ref，块头 property=n、
-  SetPageProperty、nr_free+=n，并按地址插入；
-- alloc_pages：断言 n>0；n>nr_free 返回 NULL；遍历整条空闲链，记录 property≥n 且
-  property 最小的块，遇到 property==n 可提前结束；取出后若块更大，把剩余部分
-  （page+n 起）作为新块插回原位置；nr_free-=n；ClearPageProperty(page)；
-- free_pages：断言 n>0，逐页断言 !PageReserved && !PageProperty 并清 ref/flags；
-  块头 property=n、SetPageProperty、nr_free+=n；按地址插入后与前一后一共两个相邻块合并；
-- check：直接复用文件内 best_fit_check。
+- Post-Condition：
+  * 时钟中断每次都重设 timecmp，ticks 单调递增；
+  * 非法指令/断点异常返回后 epc 跳过故障指令（长度按编码判断）；
+  * 未知中断/异常有诊断输出，不静默。
+- Requirements：禁止在异常处理中写死 epc += 4；禁止在时钟中断中省略 clock_set_next_event。
 ```
 
-**AI 关键产出**：`best_fit_alloc_pages` 遍历全部空闲块取最小可满足块（相等即 break），
-释放沿用有序插入 + 双向合并；`pmm_manager` 切换为 `best_fit_pmm_manager` 后
-`make grade` 的 `[Test 2] Best-Fit: PASS`，总分 20/20，初版实现一次通过。
-
----
-
-## 提示词 3：从零生成 Buddy System 模块（对应功能模块二任务三，第一份 prompt）
-
-**使用场景**：实验不提供 Buddy System 的任何框架代码，需要新增模块并接入内核。
-
-```text
-[PROMPT]
-**任务**：参考现有 ucore 物理内存管理框架，从零生成伙伴系统（Buddy System）物理内存分配模块，
-新增 kern/mm/buddy_pmm.c 与 kern/mm/buddy_pmm.h，注册 buddy_pmm_manager，
-使 kernel/mm 的构建系统能自动编译该文件（放入 kern/mm 即可）。
-**操作要求**：
-1. 只使用 struct Page 现有字段（ref/flags/property/page_link），不新增全局页数组；
-   建议用 property 保存块阶 order，块大小为 2^order 页，用 PG_property 标记空闲块头；
-2. 每种 order 维护一条空闲链表（free_area_t 数组），不能只用一条链表；
-3. init_memmap 要把 [base, base+n) 按“地址对齐 + 不超过剩余长度”的贪心策略拆成
-   若干 2^k 页的块登记，保证每个块头相对物理地址按自身大小对齐；
-4. alloc_pages(n) 把 n 向上取整到 2^k，从 k 阶开始向上找第一个非空链表，
-   取块后逐级对半分裂，多余的一半挂入低阶空闲链；
-5. free_pages 清页状态后按阶挂链，并用“物理地址 XOR 块大小”求伙伴，
-   伙伴空闲且同阶时逐级合并，合并后必须把块从低阶链移到高阶链；
-6. 合并只能在 init_memmap 登记过的页范围内进行，禁止越界读写页描述符。
-**输出要求**：给出完整代码，并说明块头约定、分裂/合并流程、nr_free 与每阶计数的关系，
-以及为什么块地址必须按自身大小对齐。
-
-[RELY]
-- struct Page 字段与 PG_reserved/PG_property 宏（memlayout.h）
-- free_area_t { list_entry_t free_list; unsigned int nr_free; } 与 list.h 接口
-- page2pa(page)=(page-pages+nbase)<<12；PGSIZE=4096；PADDR/KADDR 约定
-- pmm_manager 接口与 default_pmm.c 的调用语义
-- init_memmap 的每页初始状态为 PageReserved（page_init 刚建立描述符时的状态）
-- QEMU 物理内存 128MB，页号范围 [nbase, npage)，nbase=0x80000
-
-[GUARANTEE]
-- 评分路径仍使用 best_fit_pmm_manager，不改变 make grade 的 Test 1/Test 2 结果；
-- 不修改 default_pmm.c、best_fit_pmm.c 的测试函数；编译通过 -Werror；
-- 不依赖浮点、不递归，合并循环最多 MAX_ORDER 次。
-
-[SPECIFICATION]
-- 常量：MAX_ORDER=10（单块最大 1024 页=4MB）；
-- init：清空全部阶的空闲链与计数，nr_free=0；
-- init_memmap：断言 n>0 且全 reserved，清 flags/property/ref；记录本次管理范围
-  [base, base+n)；循环取当前地址可对齐的最大 order（size≤remaining 且 PA 对齐），
-  置块头 property=order、SetPageProperty、挂入 free_list[order]，更新每阶计数与 nr_free；
-- alloc_pages：n==0 或 n>nr_free 返回 NULL；order=ceil(log2(n))，order>MAX_ORDER 返回 NULL；
-  从 order 向上找非空链表；取头块后逐级分裂，右半块置 property=cur、SetPageProperty、
-  挂入 free_list[cur]；最终把整块的 flags/property/ref 清零，nr_free-=2^order；
-- free_pages：order=ceil(log2(n))，逐页断言 !PageReserved，清 flags/property/ref；
-  块头挂入 free_list[order] 并 nr_free+=2^order；while(order<MAX_ORDER)：
-  伙伴 PA=pa^(2^order<<12)，若伙伴在管理范围内、PageProperty 为真且 property==order，
-  则把二者从当前阶链表摘下，合并后的低地址块作为新块头，order++ 后挂入高一阶链表；
-- nr_free_pages 返回 nr_free；check 校验每条链上块头 property 与阶一致、块地址按阶对齐、
-  各阶计数之和等于 nr_free。
-```
-
-**AI 关键产出**：`buddy_pmm.c` 实现了 11 条空闲链（order 0～10）、贪心登记、逐级分裂、
-基于地址异或的伙伴合并与跨阶链表迁移；后续第二份 prompt 生成的自测全部通过。
-
----
-
-## 提示词 4：为 Buddy System 设计测试（对应功能模块二任务三，第二份 prompt）
-
-**使用场景**：实验不提供 Buddy 的测试函数，需要自行设计一套可重复、可判定的测试。
-
-```text
-[PROMPT]
-**任务**：针对上一步生成的 Buddy System 模块设计测试函数 buddy_test()，
-检验分配、释放、分裂、合并与边界行为是否正确。
-**操作要求**：
-1. 测试不得改动当前 pmm_manager，也不得破坏真实物理内存的空闲链表：
-   使用一块私有的、页对齐的 struct Page 描述符池（如 1024 个描述符）作为测试对象，
-   在测试前把池内描述符全部置为 reserved，再调用 buddy_init/buddy_init_memmap；
-2. 每个测试用例用 assert 判定，失败直接触发内核 panic；用例结束必须让池恢复到初始状态；
-3. 至少覆盖：
-   (a) 初始化后总空闲页数、块头 property、块地址对齐、各阶计数一致；
-   (b) 非法请求：n=0、n 超过总空闲页；
-   (c) 逐页分配直至耗尽，再请求必须返回 NULL，且所有阶链表为空；
-   (d) 全部释放后，空闲页数与“各阶块数”必须恢复到初始快照（验证完全合并）；
-   (e) 取走最大块再释放，验证返回的块头与恢复后的结构；
-   (f) 先占满所有低阶块，再申请 1 页以强制分裂大块，随后全部释放，验证级联合并；
-   (g) 非 2 的幂请求（3 页、5 页）按 2^k 向上取整并正确回收；
-   (h) 无空闲页时小请求仍返回 NULL。
-**输出要求**：给出测试代码，并逐条说明每个用例验证的不变量、为什么能发现分裂/合并错误。
-
-[RELY]
-- buddy 模块接口：buddy_init、buddy_init_memmap(base,n)、buddy_alloc_pages(n)、
-  buddy_free_pages(base,n)、buddy_nr_free_pages()
-- struct Page：property 表示块阶、PG_property 表示空闲块头、page_link 挂链
-- 页描述符池是普通 struct Page 数组，page2pa 对连续描述符仍按 4KB 递增，
-  因此可以在私有池上完整复现分裂与合并（不影响真实 pages 数组）
-- 测试运行环境为单核、无中断，assert 失败即 panic，输出可被 make qemu 捕获
-
-[GUARANTEE]
-- 测试只读写私有池的描述符，不调用真实内存的 alloc/free 路径；
-- 每个用例结束后池状态可重建，测试可重复执行；
-- 不修改 buddy 分配算法本身，不为了让测试通过而放宽断言。
-
-[SPECIFICATION]
-- 快照：记录初始化后每阶块数 init_block_count[order]；
-- 恢复判定：total_free()==池页数，且每阶块数与每阶计数均等于快照；
-- 用例 (f) 的关键：先按 order 从小到大把每个非空链表的块全部分配掉，
-  确认只剩最大阶块，再申请 1 页，必然触发大块分裂；释放顺序与分配相反，
-  最终必须恢复快照，否则说明合并没有级联到正确阶数；
-- 所有测试输出形如 “[Buddy] Test k ...: PASS”，最后输出 “[Buddy] All tests passed”。
-```
-
-**AI 关键产出**：`buddy_test()` 共 8 个用例，全部通过；测试过程中暴露了三个真实 bug
-（见实验报告“实现迭代过程”），修正后 `make qemu` 输出 8 条 PASS。
-
----
-
-## 提示词工程小结
-
-- 对内存管理类任务，[RELY] 里把地址换算公式、页状态宏、调用约定逐条写清，
-  AI 就不容易把虚拟地址当物理地址、或把 property 的含义用错。
-- [SPECIFICATION] 里写“Post-Condition + 必须保持的不变量”（如
-  total(property)==nr_free、合并块要换链表），比只写“实现 Best-Fit/Buddy”更能约束实现细节。
-- 测试型 prompt 要明确“不得为了通过测试改算法/断言”，并要求用私有资源隔离测试，
-  否则测试会污染真实内存管理器的状态。
+**AI 关键产出**：`interrupt_handler` 按 `cause & 0xFF` 分类，时钟分支重设事件并计数；
+`exception_handler` 用 `instruction_length(epc)` 辅助函数（读低 16 位判断 2/4 字节）推进 epc。
+`make grade` 三个测试全部 PASS，总分 100/100。
