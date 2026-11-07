@@ -40,8 +40,6 @@
 - 构建：GNU Make；内核通过 `-kernel bin/ucore.img` 加载到 `0x80200000`
 - 评分：`make grade`（`tools/inject.py` 注入测试 + `tools/grade.sh` 采集 QEMU 串口输出）
 
-> 环境备注：本次实验中 WSL2 曾因 `hypervisorlaunchtype` 被设为 `Off`（VMware 安装导致）而无法启动，
-> 用管理员执行 `bcdedit /set hypervisorlaunchtype auto` 并重启后恢复。
 
 ---
 
@@ -295,14 +293,3 @@ Total Score: 100/100
   一度被误判为代码问题，确认环境正常后代码一次通过。
 
 ---
-
-## 附录：本实验修改的文件
-
-| 文件 | 修改内容 |
-|------|---------|
-| `code/kern/trap/trapentry.S` | 实现 `RESTORE_ALL`（CSR + 32 GPR，sp 最后恢复）和 `__alltraps`（`mv a0,sp` + `jal trap`） |
-| `code/kern/trap/trap.c` | 实现 `interrupt_handler`（时钟/软件/外部/未知中断分类）和 `exception_handler`（非法指令/断点按指令长度推进 epc） |
-| `code/kern/mm/pmm.c` | 补回 lab2 的 `page_init`，管理器切换为 `best_fit_pmm_manager` |
-| `code/kern/mm/best_fit_pmm.c` | 补回 lab2 的 Best-Fit 实现与 `best_fit_pmm_manager` 结构 |
-| `code/Makefile` | QEMU 启动参数由 `-device loader` 改为 `-kernel bin/ucore.img` |
-| `code/tools/grade.sh` | 同步 QEMU 启动参数为 `-kernel` |
